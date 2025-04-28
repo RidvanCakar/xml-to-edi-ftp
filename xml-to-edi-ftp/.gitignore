@@ -1,0 +1,36 @@
+# .env dosyası — özel bilgiler içerir
+.env
+
+# Log dosyaları
+*.log
+logs/
+temp/
+storage/logs/
+
+# Geçici dosyalar
+*.tmp
+*.temp
+
+# Cache ve derleme çıktıları
+storage/framework/*
+bootstrap/cache/
+
+# Vendor (Composer tarafından yüklenir, GitHub’a gerek yok)
+vendor/
+
+# IDE/editor klasörleri
+.idea/
+.vscode/
+
+# Sistem dosyaları (macOS/Windows)
+.DS_Store
+Thumbs.db
+
+# FTP gibi geçici dosyalar
+*.bak
+*.swp
+*.swo
+
+# Test çıktıları
+coverage/
+phpunit-result.xml
