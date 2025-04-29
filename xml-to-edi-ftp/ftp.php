@@ -1,15 +1,15 @@
 <?php
-// Gerekli kütüphaneler
+// Required libraries
 require __DIR__ . '/vendor/autoload.php';
 use Monolog\Logger;
 use Monolog\Handler\StreamHandler;
 use Dotenv\Dotenv;
 
-// .env dosyasını yükle
+// Load .env file
 $dotenv = Dotenv::createImmutable(__DIR__);
 $dotenv->load();
 
-// Log dosyasının dizini var mı kontrol et, yoksa oluştur
+// Check if the log directory exists, if not, create it
 $logDir = __DIR__ . '/logs';
 if (!is_dir($logDir)) {
     mkdir($logDir, 0777, true);
@@ -17,28 +17,27 @@ if (!is_dir($logDir)) {
 
 $logFile = $logDir . '/ftp.log';
 
-// Logger başlat
+// Start logger
 $log = new Logger('ftp_edifact');
-$log->pushHandler(new StreamHandler('php://stdout', Logger::DEBUG)); // terminale yazma
-$log->pushHandler(new StreamHandler($logFile, Logger::DEBUG)); // log dosyasına yazma
+$log->pushHandler(new StreamHandler('php://stdout', Logger::DEBUG)); // write to terminal
+$log->pushHandler(new StreamHandler($logFile, Logger::DEBUG)); // write to log file
 
 $log->info("İşlem başlatıldı.");
 
 
-// FTP sunucu bilgileri
+// FTP server information
 $ftp_host = $_ENV['FTP_HOST'];
 $ftp_user_name = $_ENV['FTP_USERNAME'];
 $ftp_user_pass = $_ENV['FTP_PASSWORD'];
 $ftp_port = $_ENV['FTP_PORT'];
 
-// FTP klasör bilgileri
+// FTP folder information
 $inbox_dir = $_ENV['INBOX_DIR'];
 $outbox_dir = $_ENV['OUTBOX_DIR'];
 $archive_dir = $_ENV['ARCHIVE_DIR'];
 $error_dir = $_ENV['ERROR_DIR'];
 
-
-// FTP bağlantısı kurma
+// Establish FTP connection
 $conn = ftp_connect($ftp_host, $ftp_port);
 if (!$conn) {
     $log->error("FTP bağlantısı sağlanamadı.");
@@ -53,7 +52,41 @@ if (!$login_result) {
 
 $log->info("FTP bağlantısı başarılı.");
 
-// Inbox klasöründeki XML dosyalarını listele
+
+
+// Check if the archive directory exists, if not, create it
+if (!ftp_chdir($conn, $archive_dir)) {  // Try to change to the archive directory
+    $log->info("Archive klasörü bulunamadı. Yeni klasör oluşturuluyor.");
+    if (!ftp_mkdir($conn, $archive_dir)) {  // Create the archive directory
+        $log->error("Archive klasörü oluşturulamadı.");
+        exit("Archive klasörü oluşturulamadı.\n");
+    }
+    $log->info("Archive klasörü oluşturuldu.");
+}
+
+
+//Check if the outbox directory exists, if not, create it
+if (!ftp_chdir($conn, $outbox_dir)){
+    $log->info("outbox klasörü bulunamadı. yeni klasör oluşturuluyor");
+    if(!ftp_mkdir($conn,$outbox_dir)){
+        $log->error("outbox klasörü oluşturulamadı.");
+        exit("outbox klasörü oluşturulmadı. \n");
+    }
+    $log->info("outbox klasörü oluşturuldu");
+}
+
+//Check if the inbox directory exists, if not, create it
+if (!ftp_chdir($conn, $inbox_dir)){
+    $log->info("inbox klasörü bulunamadı. yeni klasör oluşturuluyor");
+    if(!ftp_mkdir($conn,$inbox_dir)){
+        $log->error("inbox klasörü oluşturulamadı.");
+        exit("inbox klasörü oluşturulmadı. \n");
+    }
+    $log->info("inbox klasörü oluşturuldu");
+
+}
+
+// List XML files in the inbox folder
 $files = ftp_nlist($conn, $inbox_dir);
 if (empty($files)) {
     $log->warning("Inbox klasöründe işlenecek dosya bulunamadı.");
@@ -62,14 +95,14 @@ if (empty($files)) {
 
 foreach ($files as $file) {
     if (pathinfo($file, PATHINFO_EXTENSION) != 'xml' && pathinfo($file, PATHINFO_EXTENSION) != 'XML') {
-        continue; // Sadece XML dosyalarını  al
+        continue; // Only get XML files
     }
 
     $filename = basename($file);
     $log->info("İşleme alınıyor: $filename");
 
     try {
-        // XML dosyasını FTP'den indir
+        // Download the XML file from FTP
         $local_file_path = __DIR__ . "/temp/$filename";
         if (!ftp_get($conn, $local_file_path, "$inbox_dir/$filename", FTP_BINARY)) {
             throw new Exception("XML dosyası FTP'den indirilemedi.");
@@ -77,51 +110,50 @@ foreach ($files as $file) {
 
         $log->info("XML dosyası indirildi: $filename");
 
-        // XML'i EDIFACT'a dönüştür
+        // Convert XML to EDIFACT
         $xml = simplexml_load_file($local_file_path);
         if (!$xml) {
             throw new Exception("XML geçersiz veya okunamadı.");
         }
 
-        // EDIFACT dönüşüm fonksiyonu
+        // EDIFACT conversion function
         $edi_string = convertXmlToEdifact($xml);
 
-        // EDIFACT dosyasını oluştur
-        $edi_filename = pathinfo($filename, PATHINFO_FILENAME) . '.edi';
+        // Create the EDIFACT file with a unique name timestamp
+        $timestamp = date('Ymd_His');
+        $edi_filename = pathinfo($filename, PATHINFO_FILENAME) . "_$timestamp.edi";
         $edi_file_path = __DIR__ . "/temp/$edi_filename";
         file_put_contents($edi_file_path, $edi_string);
         $log->info("EDIFACT dosyası oluşturuldu: $edi_filename");
 
-        // EDIFACT dosyasını FTP'ye yükle
+        // Upload the EDIFACT file to FTP
         if (!ftp_put($conn, "$outbox_dir/$edi_filename", $edi_file_path, FTP_BINARY)) {
             throw new Exception("EDIFACT dosyası FTP'ye yüklenemedi.");
         }
         $log->info("EDIFACT dosyası outbox'a yüklendi: $edi_filename");
 
-        // XML dosyasını archive klasörüne taşı
-        if (!ftp_rename($conn, "$inbox_dir/$filename", "$archive_dir/$filename")) {
+        // Move the XML file to the archive folder with timestamp
+        $archived_filename = pathinfo($filename, PATHINFO_FILENAME) . "_$timestamp." . pathinfo($filename, PATHINFO_EXTENSION);
+        if (!ftp_rename($conn, "$inbox_dir/$filename", "$archive_dir/$archived_filename")) {
             throw new Exception("XML dosyası archive klasörüne taşınamadı.");
         }
-        $log->info("XML dosyası archive klasörüne taşındı: $filename");
+        $log->info("XML dosyası archive klasörüne taşındı: $archived_filename");
 
-        // Geçici dosyalar siliniyor
+        // Delete temporary files
         unlink($local_file_path);
         unlink($edi_file_path);
 
     } catch (Exception $e) {
         $log->error("Hata oluştu: " . $e->getMessage());
-
-       
-
         $log->info("Hatalı dosya error klasörüne taşındı: $filename");
     }
 }
 
-// FTP bağlantısını kapat
+// Close FTP connection
 ftp_close($conn);
 $log->info("Tüm işlemler tamamlandı.");
 
-// XML'i EDIFACT'a dönüştüren fonksiyon
+// Function to convert XML to EDIFACT
 function convertXmlToEdifact(SimpleXMLElement $xml): string {
     $header = $xml->OrderHeader;
     $details = $xml->OrderDetails->Detail;
